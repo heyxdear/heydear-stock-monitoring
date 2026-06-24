@@ -24,17 +24,71 @@ MAX_NAME = 30
 # SKUs, die wegen Printeers-SKU-Logik nicht beruecksichtigt werden
 EXCLUDE_SKUS = {"HEYDEA2007", "HEYDEA2008", "HEYDEA2009"}  # standalone pouches
 
+# Component coverage rules: the "component" stock must always be >= the "driver"
+# stock (1:1 dependency). "technical" SKUs are duplicates shown for context but
+# not counted as real stock. Add further pairs here as needed.
+COMPONENT_RULES = [
+    {
+        "label": "Dog tag keychain needs a lobster claw chain",
+        "driver": "HEYDEA0003",          # real sellable stock (Front image)
+        "technical": ["HEYDEA0004"],     # Back image — technical duplicate only
+        "component": "HEYDEA1003",       # lobster claw — must stay >= driver
+    },
+    {
+        "label": "Every acrylic ornament needs a silver hanger",
+        "driver_match": "acrylic ornament",  # sum of all acrylic ornament SKUs
+        "driver_label": "all acrylic ornaments",
+        "component": "HEYDEA1001",           # ornament hanger silver — >= total
+    },
+    {
+        "label": "Shopping cart keychain needs its (larger) lobster claw chain",
+        "driver": "HEYDEA0016",              # Keychain steel shopping cart
+        "component": "HEYDEA1015",           # bigger lobster claw chain — on the way
+    },
+]
+
+# Tracked component/driver SKUs are always shown, even at 0 stock
+ALWAYS_SHOW = set()
+for _r in COMPONENT_RULES:
+    ALWAYS_SHOW.add(_r["component"])
+    if "driver" in _r:
+        ALWAYS_SHOW.add(_r["driver"])
+
 # Category order + emoji + lowercase keyword matchers (checked top-to-bottom)
 CATEGORIES = [
-    ("ornaments", "🎄", "Acrylic Ornaments", ["acrylic ornament", "ornament hanger", "ornament"]),
+    ("ornaments", "✨", "Acrylic Ornaments", ["acrylic ornament", "ornament hanger", "ornament"]),
     ("bracelets", "📿", "Bracelets",         ["bracelet"]),
     ("keychains", "🔑", "Keychains",         ["keychain", "key chain", "lucky charm",
                                               "lobster claw", "dog tag", "shopping cart",
                                               "leather sublimation"]),
-    ("bags",      "👜", "Bags & Pouches",    ["bag", "pouch", "sleeve", "velvet",
+    ("bags",      "🎁", "Gift Bags & Packaging", ["bag", "pouch", "sleeve", "velvet",
                                               "satin", "drawstring", "linen"]),
-    ("other",     "🎁", "Other",             []),
+    ("other",     "🗂️", "Other",             []),
 ]
+
+# Visual sub-groups inside a category (daily report only). First match wins.
+SUBGROUPS = {
+    "keychains": [
+        ("Dog Tag",       ["dog tag"]),          # front, back and lobster claw chain
+        ("Sublimation",   ["sublimation"]),
+        ("Lucky Charm",   ["lucky charm"]),
+        ("Shopping Cart", ["shopping cart"]),
+    ],
+}
+
+def split_subgroups(cat_key, cat_rows):
+    defs = SUBGROUPS.get(cat_key)
+    if not defs:
+        return None
+    used, groups = set(), []
+    for label, kws in defs:
+        sub = [r for r in cat_rows
+               if id(r) not in used and any(k in r["name"].lower() for k in kws)]
+        for r in sub: used.add(id(r))
+        if sub: groups.append((label, sub))
+    rest = [r for r in cat_rows if id(r) not in used]
+    if rest: groups.append(("Other", rest))
+    return groups
 
 def categorize(name):
     n = name.lower()
@@ -118,7 +172,7 @@ def code_table(rows, cols):
     width = max([len(header)] + [len(b) for b in body])
     return "```\n" + header + "\n" + "-" * width + "\n" + "\n".join(body) + "\n```"
 
-def category_table_block(cat_rows, weekly=False):
+def category_table_text(cat_rows, weekly=False):
     # Numbers + SKU first (aligned), full product name LAST (unpadded, never cut)
     if weekly:
         cols = [("Sold", 6, "r"), ("Left", 6, "r"), ("SKU", 12, "l"), ("Product", None, "l")]
@@ -130,17 +184,63 @@ def category_table_block(cat_rows, weekly=False):
         for r in cat_rows:
             sold = "" if r["delta"] is None else (fmt(r["delta"]) if r["delta"] > 0 else ("0" if r["delta"] == 0 else "+" + fmt(-r["delta"])))
             data.append((fmt(r["phys"]), fmt(r["reserved"]), sold, r["sku"], r["name"].strip()))
-    return b_section(code_table(data, cols))
+    return code_table(data, cols)
+
+def category_table_block(cat_rows, weekly=False):
+    return b_section(category_table_text(cat_rows, weekly))
 
 def grouped(rows):
-    """Return list of (emoji,label,cat_rows) in category order, skipping empties."""
+    """Return list of (key,emoji,label,cat_rows) in category order, skipping empties."""
     out = []
     for key, emoji, label, _ in CATEGORIES:
         cat = [r for r in rows if r["cat"] == key]
-        if cat: out.append((emoji, label, cat))
+        if cat: out.append((key, emoji, label, cat))
     return out
 
 # ---- Daily report ----
+def subgroup_for(cat_key, name):
+    defs = SUBGROUPS.get(cat_key)
+    if not defs:
+        return None
+    for label, kws in defs:
+        if any(k in name.lower() for k in kws):
+            return label
+    return "Other"
+
+def compute_coverage(today):
+    """Coverage verdicts anchored to the category/subgroup of their driver, so
+    component checks appear inline with the relevant product group."""
+    out = []
+    for rule in COMPONENT_RULES:
+        comp = today.get(rule["component"])
+        if not comp:
+            continue
+        if "driver_match" in rule:
+            kw = rule["driver_match"].lower(); tech = set(rule.get("technical", []))
+            drivers = [it for sku, it in today.items()
+                       if kw in it["name"].lower() and sku != rule["component"] and sku not in tech]
+            if not drivers:
+                continue
+            driver_qty = sum(it["physicalQuantity"] for it in drivers)
+            driver_label = rule.get("driver_label", "all drivers")
+            cat_name = rule["driver_match"]
+        else:
+            drv = today.get(rule["driver"])
+            if not drv:
+                continue
+            driver_qty = drv["physicalQuantity"]; driver_label = drv["name"].strip()
+            cat_name = drv["name"]
+        diff = comp["physicalQuantity"] - driver_qty
+        cov = comp["name"].strip()
+        if diff >= 0:
+            text = f"🔗 Component check — {cov} ({fmt(comp['physicalQuantity'])}) ≥ {driver_label} ({fmt(driver_qty)}) ✅ covered · buffer {fmt(diff)}"
+        else:
+            text = f"🚨 *SHORTFALL* — {cov} ({fmt(comp['physicalQuantity'])}) below {driver_label} ({fmt(driver_qty)}). Order at least *{fmt(-diff)}* more."
+        cat_key = categorize(cat_name)
+        out.append({"cat": cat_key, "sub": subgroup_for(cat_key, cat_name),
+                    "shortfall": diff < 0, "text": text})
+    return out
+
 def build_report(today_items, prev_items, prev_date, history):
     today = index_by_sku(today_items)
     prev  = index_by_sku(prev_items) if prev_items else {}
@@ -148,7 +248,7 @@ def build_report(today_items, prev_items, prev_date, history):
     for sku, it in today.items():
         if sku in EXCLUDE_SKUS: continue
         phys = it["physicalQuantity"]
-        if phys <= 0: continue
+        if phys <= 0 and sku not in ALWAYS_SHOW: continue
         logi = it["logicalQuantity"]
         delta = (prev[sku]["physicalQuantity"] - phys) if sku in prev else None
         rate = avg_runrate(sku, history)
@@ -169,20 +269,36 @@ def build_report(today_items, prev_items, prev_date, history):
         txt += "\n".join(f"• `{r['sku']}` {r['name'].strip()} — *{fmt(r['phys'])}* left · ~{r['rate']:.0f}/day · ⏳ ~{r['days_left']:.0f}d" for r in low)
         blocks += [b_divider(), b_section(txt)]
 
-    for emoji, label, cat in grouped(rows):
+    coverage = compute_coverage(today)
+    def add_verdicts(ckey, csub):
+        for cv in coverage:
+            if cv["cat"] == ckey and cv["sub"] == csub:
+                blocks.append(b_section(cv["text"]) if cv["shortfall"] else b_context(cv["text"]))
+
+    for key, emoji, label, cat in grouped(rows):
         cat.sort(key=lambda r: r["name"].lower())
-        blocks += [b_divider(), b_header(f"{emoji} {label} · {len(cat)} SKUs"),
-                   category_table_block(cat, weekly=False)]
+        blocks += [b_divider(), b_header(f"{emoji} {label} · {len(cat)} SKUs")]
+        subs = split_subgroups(key, cat)
+        if subs:
+            for sublabel, subrows in subs:
+                subrows.sort(key=lambda r: r["name"].lower())
+                blocks.append(b_section(f"*{sublabel}*\n" + category_table_text(subrows, weekly=False)))
+                add_verdicts(key, sublabel)
+        else:
+            blocks.append(category_table_block(cat, weekly=False))
+            add_verdicts(key, None)
 
     restocks = sorted([r for r in rows if r["delta"] and r["delta"] < 0], key=lambda r: r["delta"])
     if restocks:
         txt = "📥 *Restocked* (inbound, not a sale)\n" + "\n".join(
             f"• `{r['sku']}` {r['name'].strip()} — ➕ +{fmt(-r['delta'])} → {fmt(r['phys'])} in stock" for r in restocks)
         blocks += [b_divider(), b_section(txt)]
+    elif prev_items:
+        blocks += [b_divider(), b_section(f"📥 *Inbound deliveries*\nNo restocks since {prev_date} — stock moved through sales only.")]
 
     sold_total = sum(r["delta"] for r in rows if r["delta"] and r["delta"] > 0)
     reserved_total = sum(r["reserved"] for r in rows)
-    foot = f"📊 {len(rows)} SKUs with stock · zero-stock hidden · source: Printeers API v2"
+    foot = f"📊 {len(rows)} SKUs shown · zero-stock hidden (except tracked components) · source: Printeers API v2"
     if prev_items:
         foot = f"🛒 Sold since {prev_date}: *{fmt(sold_total)}* units · 🔒 Reserved (open orders): {fmt(reserved_total)}\n" + foot
     sold_period = f"Sold = units sold since {prev_date} (last report)" if prev_items else "Sold = n/a on first run"
@@ -223,7 +339,7 @@ def build_weekly_report(today_items, history):
                      "phys": it.get("physicalQuantity", 0), "cat": categorize(it.get("name", sku))})
 
     if rows:
-        for emoji, label, cat in grouped(rows):
+        for key, emoji, label, cat in grouped(rows):
             cat.sort(key=lambda r: r["name"].lower())
             blocks += [b_divider(), b_header(f"{emoji} {label} · {fmt(sum(c['sold'] for c in cat))} sold"),
                        category_table_block(cat, weekly=True)]
