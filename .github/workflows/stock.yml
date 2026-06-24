@@ -1,0 +1,50 @@
+name: Printeers Stock Monitoring
+
+on:
+  schedule:
+    - cron: '0 4 * * *'    # daily 04:00 UTC = 06:00 Berlin (summer)
+    - cron: '0 5 * * 1'    # Monday 05:00 UTC = 07:00 Berlin (summer)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  daily:
+    if: github.event.schedule == '0 4 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Run daily stock report
+        env:
+          PRINTEERS_SECRET_KEY: ${{ secrets.PRINTEERS_SECRET_KEY }}
+          SLACK_WEBHOOK_URL:     ${{ secrets.SLACK_WEBHOOK_URL }}
+          PRINTEERS_ENV:         ${{ secrets.PRINTEERS_ENV }}
+          SLACK_BOT_NAME:        ${{ secrets.SLACK_BOT_NAME }}
+          SLACK_BOT_ICON:        ${{ secrets.SLACK_BOT_ICON }}
+        run: python3 stock_report.py --post
+      - name: Commit today's snapshot
+        run: |
+          git config user.name  "stock-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add snapshots/
+          git commit -m "snapshot $(date +%F)" || echo "no changes"
+          git push
+
+  weekly:
+    if: github.event.schedule == '0 5 * * 1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Run weekly stock balance
+        env:
+          PRINTEERS_SECRET_KEY: ${{ secrets.PRINTEERS_SECRET_KEY }}
+          SLACK_WEBHOOK_URL:     ${{ secrets.SLACK_WEBHOOK_URL }}
+          PRINTEERS_ENV:         ${{ secrets.PRINTEERS_ENV }}
+          SLACK_BOT_NAME:        ${{ secrets.SLACK_BOT_NAME }}
+          SLACK_BOT_ICON:        ${{ secrets.SLACK_BOT_ICON }}
+        run: python3 stock_report.py --weekly --no-save --post
