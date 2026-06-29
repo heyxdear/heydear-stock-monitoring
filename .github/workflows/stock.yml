@@ -3,7 +3,6 @@ name: Printeers Stock Monitoring
 on:
   schedule:
     - cron: '5 4 * * *'    # daily 04:05 UTC = 06:05 Berlin (summer) — single morning run
-    - cron: '5 5 * * 1'    # Monday 05:05 UTC = 07:05 Berlin (summer) — weekly balance
   workflow_dispatch:
 
 permissions:
@@ -11,7 +10,6 @@ permissions:
 
 jobs:
   daily:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule != '5 5 * * 1')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,19 +30,3 @@ jobs:
           git add snapshots/
           git commit -m "snapshot $(date +%F)" || echo "no changes"
           git push
-
-  weekly:
-    if: github.event_name == 'schedule' && github.event.schedule == '5 5 * * 1'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - name: Run weekly stock balance
-        env:
-          PRINTEERS_SECRET_KEY: ${{ secrets.PRINTEERS_SECRET_KEY }}
-          SLACK_WEBHOOK_URL:     ${{ secrets.SLACK_WEBHOOK_URL }}
-          PRINTEERS_ENV:         ${{ secrets.PRINTEERS_ENV }}
-          SLACK_BOT_NAME:        ${{ secrets.SLACK_BOT_NAME }}
-          SLACK_BOT_ICON:        ${{ secrets.SLACK_BOT_ICON }}
-        run: python3 stock_report.py --weekly --no-save --post
