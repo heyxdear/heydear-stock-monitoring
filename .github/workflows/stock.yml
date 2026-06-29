@@ -2,9 +2,8 @@ name: Printeers Stock Monitoring
 
 on:
   schedule:
-    - cron: '17 4 * * *'    # daily 04:17 UTC = 06:17 Berlin (summer); off-peak minute
-    - cron: '17 5 * * 1'    # Monday 05:17 UTC = 07:17 Berlin (summer)
-    - cron: '7 12 * * *'    # TEMP TEST RUN 12:07 UTC — remove after testing
+    - cron: '5 4 * * *'    # daily 04:05 UTC = 06:05 Berlin (summer) — single morning run
+    - cron: '5 5 * * 1'    # Monday 05:05 UTC = 07:05 Berlin (summer) — weekly balance
   workflow_dispatch:
 
 permissions:
@@ -12,7 +11,7 @@ permissions:
 
 jobs:
   daily:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule != '17 5 * * 1')
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule != '5 5 * * 1')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +34,7 @@ jobs:
           git push
 
   weekly:
-    if: github.event_name == 'schedule' && github.event.schedule == '17 5 * * 1'
+    if: github.event_name == 'schedule' && github.event.schedule == '5 5 * * 1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
