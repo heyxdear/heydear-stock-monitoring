@@ -12,7 +12,7 @@ Stock columns:
 Usage:
   python3 stock_report.py [--weekly] [--post] [--no-save]
 """
-import json, os, sys, glob, urllib.request
+import json, os, sys, glob, urllib.request, urllib.error
 from datetime import date, datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -296,11 +296,16 @@ def build_report(today_items, prev_items, prev_date, history):
     elif prev_items:
         blocks += [b_divider(), b_section(f"📥 *Inbound deliveries*\nNo restocks since {prev_date} — stock moved through sales only.")]
 
-    sold_total = sum(r["delta"] for r in rows if r["delta"] and r["delta"] > 0)
+    # Count only finished products: exclude component SKUs and technical "back image" sides,
+    # otherwise one sale is counted multiple times (front + back + component).
+    component_skus = {r.get("component") for r in COMPONENT_RULES}
+    def _is_product(r):
+        return (r["sku"] not in component_skus) and ("back image" not in r["name"].lower())
+    sold_total = sum(r["delta"] for r in rows if r["delta"] and r["delta"] > 0 and _is_product(r))
     reserved_total = sum(r["reserved"] for r in rows)
     foot = f"📊 {len(rows)} SKUs shown · zero-stock hidden (except tracked components) · source: Printeers API v2"
     if prev_items:
-        foot = f"🛒 Sold since {prev_date}: *{fmt(sold_total)}* units · 🔒 Reserved (open orders): {fmt(reserved_total)}\n" + foot
+        foot = f"🛒 Sold since {prev_date}: *{fmt(sold_total)}* finished products (components & back sides not double counted) · 🔒 Reserved: {fmt(reserved_total)}\n" + foot
     sold_period = f"Sold = units sold since {prev_date} (last report)" if prev_items else "Sold = n/a on first run"
     blocks += [b_divider(), b_context("Stock = physical in warehouse · Resv = reserved (open orders) · " + sold_period),
                b_context(foot)]
@@ -353,11 +358,50 @@ def build_weekly_report(today_items, history):
     text = f"Printeers Weekly Stock Balance week ending {today_str} — {fmt(total)} units sold"
     return text, blocks
 
+
+def _gh(cfg):
+    return cfg.get("GITHUB_TOKEN",""), cfg.get("GITHUB_REPO","")
+
+def github_snapshot_exists(cfg, day):
+    token, repo = _gh(cfg)
+    if not token or not repo:
+        return False
+    url = f"https://api.github.com/repos/{repo}/contents/snapshots/{day}.json?ref=main"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}",
+                                               "Accept": "application/vnd.github+json",
+                                               "User-Agent": "heydear-stock-bot"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status == 200
+    except urllib.error.HTTPError as e:
+        if e.code == 404: return False
+        raise
+
+def github_put_snapshot(cfg, day, path):
+    token, repo = _gh(cfg)
+    if not token or not repo:
+        return "no github config"
+    import base64
+    content = base64.b64encode(open(path, "rb").read()).decode()
+    api = f"https://api.github.com/repos/{repo}/contents/snapshots/{day}.json"
+    body = json.dumps({"message": f"snapshot {day} (backup)", "content": content, "branch": "main"}).encode()
+    req = urllib.request.Request(api, data=body, method="PUT",
+                                 headers={"Authorization": f"Bearer {token}",
+                                          "Accept": "application/vnd.github+json",
+                                          "User-Agent": "heydear-stock-bot"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return f"HTTP {r.status}"
+
 def main():
     no_save = "--no-save" in sys.argv
     do_post = "--post" in sys.argv
     weekly  = "--weekly" in sys.argv
+    backup  = "--backup" in sys.argv
     cfg = load_config(CONFIG)
+    if backup:
+        if github_snapshot_exists(cfg, str(date.today())):
+            print(f"[backup] cloud already posted {date.today()} — skipping.", file=sys.stderr); return
+        do_post = True
     secret = cfg.get("PRINTEERS_SECRET_KEY", "")
     if not secret or secret == "HIER_DEINEN_KEY_EINTRAGEN":
         print("ERROR: PRINTEERS_SECRET_KEY missing in config.", file=sys.stderr); sys.exit(1)
@@ -396,6 +440,11 @@ def main():
             print("ERROR: SLACK_WEBHOOK_URL missing in config.", file=sys.stderr); sys.exit(2)
         resp = post_to_slack(webhook, text, blocks, cfg.get("SLACK_BOT_NAME"), cfg.get("SLACK_BOT_ICON"))
         print(f"[slack] {resp}", file=sys.stderr)
+        if backup and not no_save:
+            try:
+                print("[backup] pushed snapshot:", github_put_snapshot(cfg, today_str, snap_path(today_str)), file=sys.stderr)
+            except Exception as e:
+                print(f"[backup] snapshot push failed: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     main()
