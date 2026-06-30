@@ -302,7 +302,7 @@ def build_report(today_items, prev_items, prev_date, history):
     def _is_product(r):
         return (r["sku"] not in component_skus) and ("back image" not in r["name"].lower())
     sold_total = sum(r["delta"] for r in rows if r["delta"] and r["delta"] > 0 and _is_product(r))
-    reserved_total = sum(r["reserved"] for r in rows)
+    reserved_total = sum(r["reserved"] for r in rows if _is_product(r))
     foot = f"📊 {len(rows)} SKUs shown · zero-stock hidden (except tracked components) · source: Printeers API v2"
     if prev_items:
         foot = f"🛒 Sold since {prev_date}: *{fmt(sold_total)}* finished products (components & back sides not double counted) · 🔒 Reserved: {fmt(reserved_total)}\n" + foot
